@@ -1,6 +1,6 @@
 import tensorflow as tf
 from basic_layers import BaseLayer, FeedForward, ConnectLayers
-from heplers import class_with_name_scope, conditional_reset, NameCreator
+from helpers import class_with_name_scope, conditional_reset, NameCreator
 
 
 @class_with_name_scope
