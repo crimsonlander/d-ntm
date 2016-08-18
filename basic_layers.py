@@ -4,6 +4,7 @@ from abc import ABCMeta, abstractmethod
 from helpers import conditional_reset, NameCreator, class_with_name_scope, function_with_name_scope
 
 
+@class_with_name_scope
 class BaseLayer(object):
     __metaclass__ = ABCMeta
 

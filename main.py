@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 
 from babi_batch_generator import bAbiBatchGenerator, num2word
-from basic_layers import *
+from basic_layers import LSTM, SparseGRU, FeedForward, ConnectLayers
 
 batch_size = 32
 
