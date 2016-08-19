@@ -88,7 +88,7 @@ with graph.as_default():
 
     summaries = tf.merge_all_summaries()
 
-train_writer = tf.train.SummaryWriter(summaries_dir + '/train', graph)
+train_writer = tf.train.SummaryWriter(summaries_dir + '/train')
 
 num_steps = 200
 summary_frequency = 100
@@ -100,7 +100,7 @@ tf.gfile.MakeDirs(summaries_dir + '/train')
 
 with tf.Session(graph=graph) as sess:
     tf.initialize_all_variables().run()
-
+    train_writer.add_graph(graph)
     for step in range(num_steps):
         train_feed = dict()
         for j in range(num_unrollings):
