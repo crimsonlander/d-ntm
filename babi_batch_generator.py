@@ -1,13 +1,12 @@
 import numpy as np
-import os, re
-
-from sympy.printing.pretty.pretty_symbology import vobj
+import os
+import re
 
 max_fact_len = [7, 7, 8, 8, 8, 7, 7, 7, 8, 10, 9, 9, 9, 9, 6, 5, 12, 11, 11, 8]
 max_story_len = [15, 73, 325, 3, 131, 31, 57, 55, 15, 15, 15, 15, 15, 19, 12, 10, 10, 15, 6, 24]
 
 dir_name = 'tasks_1-20_v1-2/en-10k'
-file_names = os.listdir(dir_name)
+all_file_names = os.listdir(dir_name)
 train_suffix = 'train.txt'
 test_suffix = 'test.txt'
 
@@ -19,16 +18,16 @@ def question_number(filename):
     return int(filename[i:j])
 
 train_file_names = sorted(
-    filter(lambda n: n[-len(train_suffix):] == train_suffix, file_names),
+    filter(lambda n: n[-len(train_suffix):] == train_suffix, all_file_names),
     key=question_number)
 
 test_file_names = sorted(
-    filter(lambda n: n[-len(test_suffix):] == test_suffix, file_names),
+    filter(lambda n: n[-len(test_suffix):] == test_suffix, all_file_names),
     key=question_number)
 
 words = set()
 files = []
-for name in file_names:
+for name in all_file_names:
     files.append(open(dir_name + '/' + name).read().lower())
     file_words = re.split('\W+', files[-1])
     words |= set(filter(lambda w: not w.isnumeric(), file_words))
@@ -38,16 +37,23 @@ words.add('.')
 words.add('?')
 _num2word = dict(enumerate(sorted(words), 1))
 _num2word[0] = ''
-num2word = lambda x: _num2word[x]
+
+
+def num2word(x):
+    return _num2word[x]
+
 _word2num = dict(zip(_num2word.values(), _num2word.keys()))
-word2num = lambda x: _word2num[x]
+
+
+def word2num(x):
+    return _word2num[x]
 
 vocabulary_size = len(_num2word)
 
 
-def parse_file(name):
+def parse_file(filename):
     stories = []
-    file = open(dir_name + '/' + name).read().lower()
+    file = open(dir_name + '/' + filename).read().lower()
     qa = file.split(sep='\t')
     q = qa[:-1:2]
     a = qa[1::2]

@@ -117,8 +117,8 @@ class LSTM(BaseLayer):
     def reset_saved_state(self):
         with tf.variable_scope(self.name):
             return tf.group(
-                self.saved_output.assign(tf.zeros([self.batch_size, self.output_size])),
-                self.saved_state.assign(tf.zeros([self.batch_size, self.output_size])))
+                self.saved_output.assign(tf.zeros(self._state_shape)),
+                self.saved_state.assign(tf.zeros(self._state_shape)))
 
     def reset_current_state(self):
         with tf.variable_scope(self.name):
@@ -313,7 +313,7 @@ class FeedForward(BaseLayer):
 
 
 class ConnectLayers(BaseLayer):
-    def __init__(self, layers):
+    def __init__(self, layers, add_eval=True):
         self.layers = layers
         self.input_size = layers[0].input_size
         self.output_size = layers[-1].output_size
@@ -326,8 +326,8 @@ class ConnectLayers(BaseLayer):
             assert layer.input_size == layer_size
             layer_size = layer.output_size
 
-        if self.batch_size > 1:
-            self.eval_model = type(self)([layer.eval_model for layer in layers])
+        if add_eval:
+            self.eval_model = type(self)([layer.eval_model for layer in layers], False)
 
     def save_state(self):
         return tf.group(*[layer.save_state() for layer in self.layers])
