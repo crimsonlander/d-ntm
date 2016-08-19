@@ -4,9 +4,15 @@ from abc import ABCMeta, abstractmethod
 from helpers import conditional_reset, NameCreator, class_with_name_scope, function_with_name_scope
 
 
-@class_with_name_scope
 class BaseLayer(object):
     __metaclass__ = ABCMeta
+
+    def __init__(self, input_size, output_size, batch_size, name):
+        self.name = NameCreator.name_it(self, name)
+        self.input_size = input_size
+        self.output_size = output_size
+        self.batch_size = batch_size
+        self.scope = tf.VariableScope(True, self.name)
 
     @abstractmethod
     def save_state(self):
@@ -54,6 +60,9 @@ class BaseLayer(object):
         return outputs
 
     def feed_sequence_tensor(self, seq_tensor, seq_len):
+        """
+        Split seq_tensor along dimension 1 and feed resulting sequence. Dimension 1 will be squeezed.
+        """
         seq = map(lambda w: tf.squeeze(w, [1]), tf.split(1, seq_len, seq_tensor))
         return self.feed_sequence(seq)
 
@@ -74,27 +83,23 @@ class BaseLayer(object):
 @class_with_name_scope
 class LSTM(BaseLayer):
     def __init__(self, input_size, output_size, batch_size, name=None, init_weights=True):
-        self.name = NameCreator.name_it(self, name)
-        self.input_size = input_size
-        self.output_size = output_size
-        self.batch_size = batch_size
+        BaseLayer.__init__(self, input_size, output_size, batch_size, name)
         self._state_shape = [batch_size, output_size]
 
-        with tf.variable_scope(self.name):
+        with tf.variable_scope(self.scope):
             self.saved_output = tf.Variable(tf.zeros(self._state_shape),
                                             trainable=False, name='saved_output')
             self.saved_state = tf.Variable(tf.zeros(self._state_shape),
                                            trainable=False, name='saved_input')
+            if init_weights:
+                self.iW = tf.Variable(tf.truncated_normal([input_size, 4 * output_size], -0.1, 0.1), name='iW')
+                self.oW = tf.Variable(tf.truncated_normal([output_size, 4 * output_size], -0.1, 0.1), name='oW')
+                self.b = tf.Variable(tf.zeros([1, 4 * output_size]), name='b')
 
         self.output = self.saved_output
         self.state = self.saved_state
 
         if init_weights:
-            with tf.variable_scope(self.name):
-                self.iW = tf.Variable(tf.truncated_normal([input_size, 4 * output_size], -0.1, 0.1), name='iW')
-                self.oW = tf.Variable(tf.truncated_normal([output_size, 4 * output_size], -0.1, 0.1), name='oW')
-                self.b = tf.Variable(tf.zeros([1, 4 * output_size]), name='b')
-
             self.eval_model = type(self)(input_size, output_size, 1,
                                          name=self.name + '_eval', init_weights=False)
             self.eval_model.iW = self.iW
@@ -153,10 +158,7 @@ class SparseLSTM(LSTM):
 @class_with_name_scope
 class GRU(BaseLayer):
     def __init__(self, input_size, output_size, batch_size, name=None, init_weights=True):
-        self.name = NameCreator.name_it(self, name)
-        self.input_size = input_size
-        self.output_size = output_size
-        self.batch_size = batch_size
+        BaseLayer.__init__(self, input_size, output_size, batch_size, name)
         self._state_shape = [batch_size, output_size]
 
         with tf.variable_scope(self.name):
@@ -231,10 +233,7 @@ class SparseGRU(GRU):
 class RNN(BaseLayer):
     def __init__(self, input_size, output_size, batch_size,
                  activation_function=tf.nn.sigmoid, name=None, init_weights=True):
-        self.name = NameCreator.name_it(self, name)
-        self.input_size = input_size
-        self.output_size = output_size
-        self.batch_size = batch_size
+        BaseLayer.__init__(self, input_size, output_size, batch_size, name)
         self.activation_function = activation_function
         self._state_shape = [batch_size, output_size]
 
@@ -277,10 +276,7 @@ class RNN(BaseLayer):
 class FeedForward(BaseLayer):
     def __init__(self, input_size, output_size, batch_size,
                  activation_function=None, name=None, init_weights=True):
-        self.name = NameCreator.name_it(self, name)
-        self.input_size = input_size
-        self.output_size = output_size
-        self.batch_size = batch_size
+        BaseLayer.__init__(self, input_size, output_size, batch_size, name)
         self.activation_function = activation_function
 
         if init_weights:
@@ -314,10 +310,8 @@ class FeedForward(BaseLayer):
 
 class ConnectLayers(BaseLayer):
     def __init__(self, layers, add_eval=True):
+        BaseLayer.__init__(self, layers[0].input_size, layers[-1].output_size, layers[0].batch_size, None)
         self.layers = layers
-        self.input_size = layers[0].input_size
-        self.output_size = layers[-1].output_size
-        self.batch_size = layers[0].batch_size
 
         layer_size = layers[0].output_size
 

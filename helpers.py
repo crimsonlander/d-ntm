@@ -22,7 +22,7 @@ class NameCreator(object):
 
 def function_with_name_scope(method):
     def wrapper(self, *args, **kwargs):
-        with tf.variable_scope(self.name):
+        with tf.variable_scope(self.scope):
             return method(self, *args, **kwargs)
     return wrapper
 

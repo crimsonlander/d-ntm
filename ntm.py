@@ -96,10 +96,7 @@ class NTM(BaseLayer):
                  controller, mem_key_size, mem_content_size, num_cells,
                  activation_function=None, name=None, init_weights=True):
 
-        self.name = NameCreator.name_it(self, name)
-        self.input_size = input_size
-        self.output_size = output_size
-        self.batch_size = batch_size
+        BaseLayer.__init__(self, input_size, output_size, batch_size, name)
         self.mem_key_size = mem_key_size
         self.mem_content_size = mem_content_size
         self.num_cells = num_cells

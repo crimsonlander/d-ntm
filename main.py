@@ -13,12 +13,12 @@ eval_gen = bAbiBatchGenerator(1, 1, 'test')
 sentence_encoding_size = 200
 vocabulary_size = gen.vocabulary_size
 sentence_padding = gen.padding
-num_unrollings = 15
+num_unrollings = 3
 
 summaries_dir = '/tmp/TensorBoard/summaries/bAbi/lstm'
 
 
-def conditional_sparse_softmax_ce_multiple_choice(logits, labels, n_labels, weights, cond):
+def conditional_sparse_softmax_ce_multiple_choice(logits, labels, n_labels, weights, cond, name=None):
     def compute_loss():
         labels_list = list(map(lambda lab: tf.squeeze(lab, [1]), tf.split(1, n_labels, labels)))
         loss = tf.zeros([1])
@@ -27,7 +27,7 @@ def conditional_sparse_softmax_ce_multiple_choice(logits, labels, n_labels, weig
                 tf.nn.sparse_softmax_cross_entropy_with_logits(logits, labels_list[i]))
         return loss
 
-    return tf.cond(cond, compute_loss, lambda: tf.zeros([1]))
+    return tf.cond(cond, compute_loss, lambda: tf.zeros([1]), name=name)
 
 with graph.as_default():
     encoder = SparseGRU(vocabulary_size, sentence_encoding_size, batch_size)
@@ -43,41 +43,55 @@ with graph.as_default():
 
     losses = []
     predictions = []
-    for i in range(num_unrollings):
-        fact = tf.placeholder(tf.int32, (batch_size, sentence_padding))
-        input_facts.append(fact)
-        is_new_story = tf.placeholder(tf.bool, [])
-        new_story_marks.append(is_new_story)
+    with tf.variable_scope("training"):
 
-        encoding = encoder.feed_sequence_tensor(fact, sentence_padding)[-1]
-        fact_encodings.append(encoding)
-        encoder.reset_current_state()
+        with tf.variable_scope("inputs"):
+            for i in range(num_unrollings):
+                input_facts.append(
+                    tf.placeholder(tf.int32, (batch_size, sentence_padding), name="input_%02d" % i))
 
-        model.reset_current_state_if(is_new_story)
-        output = model.feed_input(encoding)
+        with tf.variable_scope("labels"):
+            for i in range(num_unrollings):
+                labels.append(tf.placeholder(tf.int32, (batch_size, 2), name="label_%02d" % i))
 
-        label = tf.placeholder(tf.int32, (batch_size, 2))
-        labels.append(label)
-        is_question = tf.placeholder(tf.bool, [])
-        question_marks.append(is_question)
+        with tf.variable_scope("question_marks"):
+            for i in range(num_unrollings):
+                question_marks.append(tf.placeholder(tf.bool, [], name="question_mark_%02d" % i))
 
-        losses.append(conditional_sparse_softmax_ce_multiple_choice(output, label, 2, [1, 0], is_question))
+        with tf.variable_scope("new_story_marks"):
+            for i in range(num_unrollings):
+                new_story_marks.append(tf.placeholder(tf.bool, [], name="new_story_mark_%02d" % i))
 
-    tf.histogram_summary('fact_encodings_train',
-                         tf.reduce_mean(tf.concat(0, fact_encodings), [0]))
+        for i in range(num_unrollings):
+            fact = input_facts[i]
+            is_new_story = new_story_marks[i]
+            is_question = question_marks[i]
+            label = labels[i]
 
-    loss = tf.reduce_mean(tf.concat(0, losses))  # + regularizer
+            encoding = encoder.feed_sequence_tensor(fact, sentence_padding)[-1]
+            fact_encodings.append(encoding)
+            encoder.reset_current_state()
+            model.reset_current_state_if(is_new_story)
+            output = model.feed_input(encoding)
+            losses.append(conditional_sparse_softmax_ce_multiple_choice(output, label, 2, [1, 0], is_question))
 
-    with tf.control_dependencies([model.save_state()]):
-        optimize = tf.train.AdadeltaOptimizer(0.01).minimize(loss)
+        tf.histogram_summary('fact_encodings_train',
+                             tf.reduce_mean(tf.concat(0, fact_encodings), [0]))
 
-    valid_input = tf.placeholder(tf.int32, (1, sentence_padding))
-    valid_encoding = encoder.eval_model.feed_sequence_tensor(valid_input, sentence_padding)[-1]
-    encoder.eval_model.reset_current_state()
+        loss = tf.reduce_mean(tf.concat(0, losses))  # + regularizer
 
-    valid_output = model.eval_model.feed_input(valid_encoding)
-    valid_label = tf.placeholder(tf.int32, (1, 2))
-    valid_is_question = tf.placeholder(tf.bool, [])
+        with tf.control_dependencies([model.save_state()]):
+            optimize = tf.train.AdadeltaOptimizer(0.01).minimize(loss)
+
+    with tf.variable_scope("validation"):
+        valid_input = tf.placeholder(tf.int32, (1, sentence_padding), name="input")
+        valid_encoding = encoder.eval_model.feed_sequence_tensor(valid_input, sentence_padding)[-1]
+        encoder.eval_model.reset_current_state()
+        valid_is_new_story = tf.placeholder(tf.bool, [], name="new_story_mark")
+        model.eval_model.reset_current_state_if(valid_is_new_story)
+        valid_output = model.eval_model.feed_input(valid_encoding)
+        valid_label = tf.placeholder(tf.int32, (1, 2), name="label")
+        valid_is_question = tf.placeholder(tf.bool, [], name="question_mark")
 
     with tf.control_dependencies([model.eval_model.save_state()]):
         valid_loss = conditional_sparse_softmax_ce_multiple_choice(
@@ -129,6 +143,7 @@ with tf.Session(graph=graph) as sess:
                 valid_feed[valid_input] = f
                 valid_feed[valid_label] = a
                 valid_feed[valid_is_question] = q
+                valid_feed[valid_is_new_story] = s
                 l, c, p = sess.run([valid_loss, prediction_certainty, valid_prediction], feed_dict=valid_feed)
                 valid_loss_acc += l
                 model_answer = num2word(p[0, 0])
