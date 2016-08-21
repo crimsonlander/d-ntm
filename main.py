@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 
 from babi_batch_generator import bAbiBatchGenerator, num2word
-from basic_layers import LSTM, SparseGRU, FeedForward, ConnectLayers
+from basic_layers import LSTM, SparseGRU, FeedForward, ConnectLayers, BatchNormalization
 
 batch_size = 32
 
@@ -13,7 +13,7 @@ eval_gen = bAbiBatchGenerator(1, 1, 'test')
 sentence_encoding_size = 200
 vocabulary_size = gen.vocabulary_size
 sentence_padding = gen.padding
-num_unrollings = 3
+num_unrollings = 15
 
 summaries_dir = '/tmp/TensorBoard/summaries/bAbi/lstm'
 
@@ -30,10 +30,12 @@ def conditional_sparse_softmax_ce_multiple_choice(logits, labels, n_labels, weig
     return tf.cond(cond, compute_loss, lambda: tf.zeros([1]), name=name)
 
 with graph.as_default():
+    batch_norm = BatchNormalization(sentence_encoding_size, batch_size, std_epsilon=1e-2, scale=1.)
     encoder = SparseGRU(vocabulary_size, sentence_encoding_size, batch_size)
-    layer1 = LSTM(sentence_encoding_size, 200, batch_size)
-    layer2 = FeedForward(200, vocabulary_size, batch_size)
-    model = ConnectLayers((layer1, layer2))
+
+    model_layer1 = LSTM(sentence_encoding_size, 200, batch_size)
+    model_layer2 = FeedForward(200, vocabulary_size, batch_size)
+    model = ConnectLayers((model_layer1, model_layer2))
 
     input_facts = []
     labels = []
@@ -69,23 +71,31 @@ with graph.as_default():
             label = labels[i]
 
             encoding = encoder.feed_sequence_tensor(fact, sentence_padding)[-1]
+            encoding = batch_norm.feed_input(encoding)
             fact_encodings.append(encoding)
             encoder.reset_current_state()
             model.reset_current_state_if(is_new_story)
             output = model.feed_input(encoding)
-            losses.append(conditional_sparse_softmax_ce_multiple_choice(output, label, 2, [1, 0], is_question))
+            losses.append(conditional_sparse_softmax_ce_multiple_choice(
+                output, label, 2, [1, 0], is_question))
 
-        tf.histogram_summary('fact_encodings_train',
-                             tf.reduce_mean(tf.concat(0, fact_encodings), [0]))
+        concat_encodings = tf.concat(0, fact_encodings)
+        encodings_mean = tf.reduce_mean(concat_encodings, [0], name='encodings_mean')
+        encodings_std = tf.sqrt(tf.reduce_mean((concat_encodings - encodings_mean) ** 2, [0]),
+                                name='encodings_std')
 
-        loss = tf.reduce_mean(tf.concat(0, losses))  # + regularizer
+        tf.histogram_summary('train_encodings_mean', encodings_mean)
+        tf.histogram_summary('train_encodings_std', encodings_std)
 
-        with tf.control_dependencies([model.save_state()]):
-            optimize = tf.train.AdadeltaOptimizer(0.01).minimize(loss)
+        loss = tf.reduce_mean(tf.concat(0, losses), name="loss")  # + regularizer
+
+        with tf.control_dependencies([model.save_state(), batch_norm.save_state()]):
+            optimize = tf.train.AdadeltaOptimizer(1.).minimize(loss)
 
     with tf.variable_scope("validation"):
         valid_input = tf.placeholder(tf.int32, (1, sentence_padding), name="input")
         valid_encoding = encoder.eval_model.feed_sequence_tensor(valid_input, sentence_padding)[-1]
+        valid_encoding = batch_norm.eval_model.feed_input(valid_encoding)
         encoder.eval_model.reset_current_state()
         valid_is_new_story = tf.placeholder(tf.bool, [], name="new_story_mark")
         model.eval_model.reset_current_state_if(valid_is_new_story)
@@ -104,7 +114,7 @@ with graph.as_default():
 
 train_writer = tf.train.SummaryWriter(summaries_dir + '/train')
 
-num_steps = 200
+num_steps = 5000
 summary_frequency = 100
 valid_size = 9
 
@@ -132,7 +142,7 @@ with tf.Session(graph=graph) as sess:
                                      options=run_options,
                                      run_metadata=run_metadata)
             train_writer.add_run_metadata(run_metadata, 'step%03d' % step)
-            train_writer.add_summary(summary)
+            train_writer.add_summary(summary, step)
 
             print(step, l)
             valid_loss_acc = 0.

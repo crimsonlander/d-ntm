@@ -1,9 +1,16 @@
 import tensorflow as tf
 from collections import defaultdict
+import inspect
 
 
-def conditional_reset(tensor, shape, cond):
-    return tf.cond(cond, lambda: tf.zeros(shape), lambda: tensor)
+def conditional_reset(tensor, default, cond):
+    return tf.cond(cond, lambda: tf.zeros_like(tensor), lambda: tensor)
+
+
+def function_args():
+    frame = inspect.getouterframes(inspect.currentframe())[1][0]
+    names, _, _, values = inspect.getargvalues(frame)
+    return [values[name] for name in names]
 
 
 class NameCreator(object):
@@ -22,7 +29,7 @@ class NameCreator(object):
 
 def function_with_name_scope(method):
     def wrapper(self, *args, **kwargs):
-        with tf.variable_scope(self.scope):
+        with tf.variable_scope("%s_%s" % (self.name, method.__name__)):
             return method(self, *args, **kwargs)
     return wrapper
 

@@ -1,24 +1,60 @@
 import tensorflow as tf
 
 from abc import ABCMeta, abstractmethod
-from helpers import conditional_reset, NameCreator, class_with_name_scope, function_with_name_scope
+from helpers import conditional_reset, NameCreator, class_with_name_scope, function_with_name_scope, function_args
 
 
 class BaseLayer(object):
     __metaclass__ = ABCMeta
 
-    def __init__(self, input_size, output_size, batch_size, name):
+    def __init__(self, input_size, output_size, batch_size, name, copy_from, *args):
+        if type(self).__name__ == "BaseLayer":
+            raise NotImplementedError("abstract class")
         self.name = NameCreator.name_it(self, name)
         self.input_size = input_size
         self.output_size = output_size
         self.batch_size = batch_size
-        self.scope = tf.VariableScope(True, self.name)
 
-    @abstractmethod
+        if not hasattr(self, "weight_variables"):
+            self.weight_variables = dict()
+
+        if not hasattr(self, "state_variables"):
+            self.state_variables = dict()
+
+        if not hasattr(self, "layers"):
+            self.layers = []
+
+        if copy_from is None:
+            for k, v in self.weight_variables.items():
+                setattr(self, k, tf.Variable(v, name=k))
+        else:
+            self.weight_variables = copy_from.weight_variables
+            for k, v in self.weight_variables.items():
+                setattr(self, k, getattr(copy_from, k))
+
+        self.current_state_variable_names = []
+        self.saved_state_variables = []
+        self.state_default_values = []
+        for k, v in self.state_variables.items():
+            var = tf.Variable(v, trainable=False, name='saved_' + k)
+            setattr(self, "saved_" + k, var)
+            setattr(self, k, var)
+            self.current_state_variable_names.append(k)
+            self.saved_state_variables.append(var)
+            self.state_default_values.append(v)
+
     def save_state(self):
         """
         :return: Graph operation to write current state to saved state.
         """
+        save_layers = [layer.save_state() for layer in self.layers]
+        save_own_state = []
+
+        for i in range(len(self.saved_state_variables)):
+            current_state = getattr(self, self.current_state_variable_names[i])
+            save_own_state.append(self.saved_state_variables[i].assign(current_state))
+
+        return tf.group(*(save_layers + save_own_state))
 
     @abstractmethod
     def feed_input(self, i):
@@ -28,25 +64,43 @@ class BaseLayer(object):
         :return: Output tensor.
         """
 
-    @abstractmethod
     def reset_saved_state(self):
         """
         :return: Graph operation to reset saved state to initial value.
         """
+        reset_layers = [layer.reset_saved_state() for layer in self.layers]
+        reset_own_state = []
 
-    @abstractmethod
+        for i in range(len(self.saved_state_variables)):
+            default_state = self.state_default_values[i]
+            reset_own_state.append(self.saved_state_variables[i].assign(default_state))
+
+        return tf.group(*(reset_layers + reset_own_state))
+
     def reset_current_state(self):
         """
         Replace current state tensor with default values.
         :return: None
         """
-    @abstractmethod
+        for layer in self.layers:
+            layer.reset_current_state()
+
+        for i in range(len(self.current_state_variable_names)):
+            setattr(self, self.current_state_variable_names[i], self.state_default_values[i])
+
     def reset_current_state_if(self, cond):
         """
         Replace current state tensor with default values if cond is True.
         :param cond: scalar boolean tensor
         :return: None
         """
+        for layer in self.layers:
+            layer.reset_current_state_if(cond)
+
+        for i in range(len(self.current_state_variable_names)):
+            current = getattr(self, self.current_state_variable_names[i])
+            setattr(self, self.current_state_variable_names[i],
+                    conditional_reset(current, self.state_default_values[i], cond))
 
     def feed_sequence(self, seq):
         """
@@ -82,34 +136,19 @@ class BaseLayer(object):
 
 @class_with_name_scope
 class LSTM(BaseLayer):
-    def __init__(self, input_size, output_size, batch_size, name=None, init_weights=True):
-        BaseLayer.__init__(self, input_size, output_size, batch_size, name)
+    def __init__(self, input_size, output_size, batch_size, name=None, copy_from=None):
         self._state_shape = [batch_size, output_size]
+        self.name = NameCreator.name_it(self, name)
+        with tf.variable_scope(self.name):
+            self.state_variables = {"state": tf.zeros(self._state_shape, name="default_state"),
+                                    "output": tf.zeros(self._state_shape, name="default_output")}
 
-        with tf.variable_scope(self.scope):
-            self.saved_output = tf.Variable(tf.zeros(self._state_shape),
-                                            trainable=False, name='saved_output')
-            self.saved_state = tf.Variable(tf.zeros(self._state_shape),
-                                           trainable=False, name='saved_input')
-            if init_weights:
-                self.iW = tf.Variable(tf.truncated_normal([input_size, 4 * output_size], -0.1, 0.1), name='iW')
-                self.oW = tf.Variable(tf.truncated_normal([output_size, 4 * output_size], -0.1, 0.1), name='oW')
-                self.b = tf.Variable(tf.zeros([1, 4 * output_size]), name='b')
-
-        self.output = self.saved_output
-        self.state = self.saved_state
-
-        if init_weights:
-            self.eval_model = type(self)(input_size, output_size, 1,
-                                         name=self.name + '_eval', init_weights=False)
-            self.eval_model.iW = self.iW
-            self.eval_model.oW = self.oW
-            self.eval_model.b = self.b
-
-    def save_state(self):
-        return tf.group(
-            self.saved_output.assign(self.output),
-            self.saved_state.assign(self.state))
+            self.weight_variables = {"iW": tf.truncated_normal([input_size, 4 * output_size], -0.1, 0.1),
+                                     "oW": tf.truncated_normal([output_size, 4 * output_size], -0.1, 0.1),
+                                     "b": tf.zeros([1, 4 * output_size])}
+            BaseLayer.__init__(*function_args())
+            if copy_from is None:
+                self.eval_model = type(self)(input_size, output_size, 1, self.name + '_eval', self)
 
     def feed_input(self, i):
         v = tf.matmul(i, self.iW) + tf.matmul(self.output, self.oW) + self.b
@@ -119,26 +158,10 @@ class LSTM(BaseLayer):
 
         return self.output
 
-    def reset_saved_state(self):
-        with tf.variable_scope(self.name):
-            return tf.group(
-                self.saved_output.assign(tf.zeros(self._state_shape)),
-                self.saved_state.assign(tf.zeros(self._state_shape)))
-
-    def reset_current_state(self):
-        with tf.variable_scope(self.name):
-            self.state = tf.zeros(self._state_shape)
-            self.output = tf.zeros(self._state_shape)
-
-    def reset_current_state_if(self, cond):
-        with tf.variable_scope(self.name):
-            self.state = conditional_reset(self.state, self._state_shape, cond)
-            self.output = conditional_reset(self.output, self._state_shape, cond)
-
 
 class SparseLSTM(LSTM):
-    def __init__(self, num_classes, output_size, batch_size, name=None, init_weights=True):
-        LSTM.__init__(self, num_classes, output_size, batch_size, name=name, init_weights=init_weights)
+    def __init__(self, num_classes, output_size, batch_size, name=None, copy_from=None):
+        LSTM.__init__(*function_args())
         self.input_size = None
         self.num_classes = num_classes
 
@@ -157,41 +180,22 @@ class SparseLSTM(LSTM):
 
 @class_with_name_scope
 class GRU(BaseLayer):
-    def __init__(self, input_size, output_size, batch_size, name=None, init_weights=True):
-        BaseLayer.__init__(self, input_size, output_size, batch_size, name)
+    def __init__(self, input_size, output_size, batch_size, name=None, copy_from=None):
         self._state_shape = [batch_size, output_size]
-
+        self.name = NameCreator.name_it(self, name)
         with tf.variable_scope(self.name):
-            if init_weights:
-                self.iW_g = tf.Variable(
-                    tf.truncated_normal([input_size, 2 * output_size], -0.1, 0.1), name='iW_g')
-                self.oW_g = tf.Variable(
-                    tf.truncated_normal([output_size, 2 * output_size], -0.1, 0.1), name='oW_g')
+            self.state_variables = {"output": tf.zeros(self._state_shape, name="default_output")}
 
-                self.iW = tf.Variable(
-                    tf.truncated_normal([input_size, output_size], -0.1, 0.1), name='iW')
-                self.oW = tf.Variable(
-                    tf.truncated_normal([output_size, output_size], -0.1, 0.1), name='oW')
+            self.weight_variables = {"iW_g": tf.truncated_normal([input_size, 2 * output_size], -0.1, 0.1),
+                                     "oW_g": tf.truncated_normal([output_size, 2 * output_size], -0.1, 0.1),
+                                     "iW": tf.truncated_normal([input_size, output_size], -0.1, 0.1),
+                                     "oW": tf.truncated_normal([output_size, output_size], -0.1, 0.1),
 
-                self.b_g = tf.Variable(tf.zeros([1, 2 * output_size]), name='b_g')
-                self.b = tf.Variable(tf.zeros([1, output_size]), name='b')
-
-            self.saved_output = tf.Variable(
-                tf.zeros(self._state_shape), trainable=False, name='saved_output')
-            self.output = self.saved_output
-
-        if init_weights:
-            self.eval_model = type(self)(input_size, output_size, 1,
-                                         name=self.name + '_eval', init_weights=False)
-            self.eval_model.iW_g = self.iW_g
-            self.eval_model.oW_g = self.oW_g
-            self.eval_model.iW = self.iW
-            self.eval_model.oW = self.oW
-            self.eval_model.b_g = self.b_g
-            self.eval_model.b = self.b
-
-    def save_state(self):
-        return self.saved_output.assign(self.output)
+                                     "b_g": tf.zeros([1, 2 * output_size]),
+                                     "b": tf.zeros([1, output_size])}
+            BaseLayer.__init__(*function_args())
+            if copy_from is None:
+                self.eval_model = type(self)(input_size, output_size, 1, self.name + '_eval', self)
 
     def feed_input(self, i):
         g = tf.nn.sigmoid(tf.matmul(i, self.iW_g) + tf.matmul(self.output, self.oW_g) + self.b_g)
@@ -201,19 +205,10 @@ class GRU(BaseLayer):
 
         return self.output
 
-    def reset_saved_state(self):
-        return self.saved_output.assign(tf.zeros(self._state_shape))
-
-    def reset_current_state(self):
-        self.output = tf.zeros(self._state_shape)
-
-    def reset_current_state_if(self, cond):
-        self.output = conditional_reset(self.output, self._state_shape, cond)
-
 
 class SparseGRU(GRU):
-    def __init__(self, num_classes, output_size, batch_size, name=None, init_weights=True):
-        GRU.__init__(self, num_classes, output_size, batch_size, name=name, init_weights=init_weights)
+    def __init__(self, num_classes, output_size, batch_size, name=None, copy_from=None):
+        GRU.__init__(*function_args())
         self.input_size = None
         self.num_classes = num_classes
 
@@ -232,65 +227,38 @@ class SparseGRU(GRU):
 @class_with_name_scope
 class RNN(BaseLayer):
     def __init__(self, input_size, output_size, batch_size,
-                 activation_function=tf.nn.sigmoid, name=None, init_weights=True):
-        BaseLayer.__init__(self, input_size, output_size, batch_size, name)
-        self.activation_function = activation_function
+                 name=None, copy_from=None, activation_function=tf.nn.sigmoid):
         self._state_shape = [batch_size, output_size]
-
+        self.name = NameCreator.name_it(self, name)
+        self.activation_function = activation_function
         with tf.variable_scope(self.name):
-            if init_weights:
-                self.iW = tf.Variable(tf.truncated_normal([input_size, output_size], -0.1, 0.1))
-                self.oW = tf.Variable(tf.truncated_normal([output_size, output_size], -0.1, 0.1))
-                self.vb = tf.Variable(tf.zeros([1, output_size]))
+            self.state_variables = {"output": tf.zeros(self._state_shape, name="default_output")}
 
-            self.saved_output = tf.Variable(tf.zeros(self._state_shape), trainable=False)
-
-            self.output = self.saved_output
-
-        if init_weights:
-            self.eval_model = type(self)(input_size, output_size, 1, activation_function,
-                                         self.name + '_eval', False)
-            self.eval_model.iW = self.iW
-            self.eval_model.oW = self.oW
-            self.eval_model.vb = self.vb
-
-    def save_state(self):
-        return self.saved_output.assign(self.output)
+            self.weight_variables = {"iW": tf.truncated_normal([input_size, output_size], -0.1, 0.1),
+                                     "oW": tf.truncated_normal([output_size, output_size], -0.1, 0.1),
+                                     "b": tf.zeros([1, output_size])}
+            BaseLayer.__init__(*function_args())
+            if copy_from is None:
+                self.eval_model = type(self)(input_size, output_size, 1, self.name + '_eval', self, activation_function)
 
     def feed_input(self, i):
         self.output = self.activation_function(
             tf.matmul(i, self.iW) + tf.matmul(self.output, self.oW) + self.vb)
         return self.output
 
-    def reset_saved_state(self):
-        return self.saved_output.assign(tf.zeros(self._state_shape))
-
-    def reset_current_state(self):
-        self.output = tf.zeros(self._state_shape)
-
-    def reset_current_state_if(self, cond):
-        self.output = conditional_reset(self.output, self._state_shape, cond)
-
 
 @class_with_name_scope
 class FeedForward(BaseLayer):
     def __init__(self, input_size, output_size, batch_size,
-                 activation_function=None, name=None, init_weights=True):
-        BaseLayer.__init__(self, input_size, output_size, batch_size, name)
+                 name=None, copy_from=None, activation_function=None):
+        self.name = NameCreator.name_it(self, name)
         self.activation_function = activation_function
-
-        if init_weights:
-            with tf.variable_scope(self.name):
-                self.W = tf.Variable(tf.truncated_normal([input_size, output_size], -0.1, 0.1), name='W')
-                self.b = tf.Variable(tf.zeros([1, output_size]), name='b')
-
-            self.eval_model = type(self)(input_size, output_size, 1, activation_function,
-                                         self.name + '_eval', False)
-            self.eval_model.W = self.W
-            self.eval_model.b = self.b
-
-    def save_state(self):
-        return tf.group()
+        with tf.variable_scope(self.name):
+            self.weight_variables = {"W": tf.truncated_normal([input_size, output_size], -0.1, 0.1),
+                                     "b": tf.zeros([1, output_size])}
+            BaseLayer.__init__(*function_args())
+            if copy_from is None:
+                self.eval_model = type(self)(input_size, output_size, 1, self.name + '_eval', self, activation_function)
 
     def feed_input(self, i):
         output = tf.matmul(i, self.W) + self.b
@@ -298,33 +266,25 @@ class FeedForward(BaseLayer):
             return self.activation_function(output)
         return output
 
-    def reset_saved_state(self):
-        return tf.group()
-
-    def reset_current_state(self):
-        pass
-
-    def reset_current_state_if(self, cond):
-        pass
-
 
 class ConnectLayers(BaseLayer):
-    def __init__(self, layers, add_eval=True):
-        BaseLayer.__init__(self, layers[0].input_size, layers[-1].output_size, layers[0].batch_size, None)
-        self.layers = layers
+    def __init__(self, layers, name=None, copy_from=None):
+        if copy_from is None:
+            self.layers = layers
+        else:
+            self.layers = [layer.eval_model for layer in copy_from.layers]
 
-        layer_size = layers[0].output_size
+        batch_size = self.layers[0].batch_size
+        layer_size = self.layers[0].output_size
 
-        for layer in layers[1:]:
-            assert layer.batch_size == self.batch_size
+        for layer in self.layers[1:]:
+            assert layer.batch_size == batch_size
             assert layer.input_size == layer_size
             layer_size = layer.output_size
 
-        if add_eval:
-            self.eval_model = type(self)([layer.eval_model for layer in layers], False)
-
-    def save_state(self):
-        return tf.group(*[layer.save_state() for layer in self.layers])
+        BaseLayer.__init__(self, self.layers[0].input_size, self.layers[-1].output_size, batch_size, name, copy_from)
+        if copy_from is None:
+            self.eval_model = type(self)(None, self.name + "_eval", self)
 
     def feed_input(self, i):
         output = i
@@ -332,13 +292,50 @@ class ConnectLayers(BaseLayer):
             output = layer.feed_input(output)
         return output
 
+
+@class_with_name_scope
+class BatchNormalization(BaseLayer):
+    def __init__(self, input_size, batch_size, std_epsilon=1e-4, scale=1., shift=0., name=None, copy_from=None):
+        self.std_epsilon = std_epsilon
+        self.scale = scale
+        self.shift = shift
+        self._shape = (1, input_size)
+        self.state_variables = {"mean": tf.zeros(self._shape),
+                                "std": tf.ones(self._shape)}
+        BaseLayer.__init__(self, input_size, input_size, batch_size, name, copy_from)
+        if copy_from is None:
+            self.update = True
+            self.eval_model = type(self)(input_size, 1, std_epsilon, scale, shift, self.name + "_eval", self)
+            self.eval_model.saved_mean = self.saved_mean
+            self.eval_model.saved_std = self.saved_std
+        else:
+            self.update = False
+
+        if self.update:
+            self.inputs = []
+
+    def feed_input(self, i):
+        if self.update:
+            self.inputs.append(i)
+
+        return (i - self.saved_mean) / (self.saved_std + self.std_epsilon) * self.scale + self.shift
+
+    def save_state(self):
+        if not self.update:
+            return tf.group()
+
+        concat_inputs = tf.concat(0, self.inputs)
+        i_mean = tf.reduce_mean(concat_inputs, [0])
+        i_std = tf.reduce_mean((concat_inputs - i_mean) ** 2, [0])
+
+        return tf.group(self.saved_mean.assign(self.saved_mean * 0.95 + i_mean * 0.05),
+                        self.saved_std.assign(self.saved_std * 0.95 + i_std * 0.05))
+
     def reset_saved_state(self):
-        return tf.group(*[layer.reset_saved_state() for layer in self.layers])
+        pass
 
     def reset_current_state(self):
-        for layer in self.layers:
-            layer.reset_current_state()
+        pass
 
     def reset_current_state_if(self, cond):
-        for layer in self.layers:
-            layer.reset_current_state_if(cond)
+        pass

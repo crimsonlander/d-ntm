@@ -4,8 +4,8 @@ from helpers import class_with_name_scope, conditional_reset, NameCreator
 
 
 @class_with_name_scope
-class Tape(object):
-    def __init__(self, mem_key_size, mem_content_size, num_cells, batch_size, name=None, init_weights=True):
+class Tape(BaseLayer):
+    def __init__(self, mem_key_size, mem_content_size, num_cells, batch_size, name=None, copy_from=True):
         self.name = NameCreator.name_it(self, name)
         self.mem_key_size = mem_key_size
         self.mem_content_size = mem_content_size
@@ -14,17 +14,21 @@ class Tape(object):
         self._content_size = [batch_size, num_cells, mem_content_size]
 
         with tf.variable_scope(self.name):
-            if init_weights:
+            if copy_from is None:
                 # Additional key for NOP
-                self.keys = tf.Variable(tf.truncated_normal([num_cells + 1, mem_key_size], -0.1, 0.1), name='keys')
+                self.weight_variables = {"keys": tf.truncated_normal([num_cells + 1, mem_key_size], -0.1, 0.1)}
 
-            self.saved_content = tf.Variable(tf.zeros(self._content_size),
-                                             dtype=tf.float32, trainable=False, name='keys')
-            self.content = self.saved_content
+            self.state_variables = {"content": tf.zeros(self._content_size)}
+            BaseLayer.__init__(self, 0, 0, batch_size, name, copy_from)
 
-        if init_weights:
-            self.eval_model = Tape(mem_key_size, mem_content_size, num_cells, 1, self.name + '_eval', False)
-            self.eval_model.keys = self.keys
+        if copy_from is None:
+            self.eval_model = Tape(mem_key_size, mem_content_size, num_cells, 1, self.name + '_eval', self)
+
+    def feed_input(self, i):
+        """
+        Not defined for this layer.
+        """
+        raise NotImplementedError("operation is not defined")
 
     def _lookup(self, keys, key_strengths):
         """
@@ -77,26 +81,13 @@ class Tape(object):
         self.content = (1.0 - erase_expansion * address_expansion) * self.content \
             + content_expansion * address_expansion
 
-    def save_state(self):
-        return self.saved_content.assign(self.content)
-
-    def reset_saved_state(self):
-        return self.saved_content.assign(tf.zeros(self._content_size))
-
-    def reset_current_state(self):
-        self.content = tf.zeros(self._content_size)
-
-    def reset_current_state_if(self, cond):
-        self.content = conditional_reset(self.content, self._content_size, cond)
-
 
 @class_with_name_scope
 class NTM(BaseLayer):
     def __init__(self, input_size, output_size, batch_size,
                  controller, mem_key_size, mem_content_size, num_cells,
-                 activation_function=None, name=None, init_weights=True):
-
-        BaseLayer.__init__(self, input_size, output_size, batch_size, name)
+                 name=None, copy_from=None, activation_function=None):
+        self.name = NameCreator.name_it(self, name)
         self.mem_key_size = mem_key_size
         self.mem_content_size = mem_content_size
         self.num_cells = num_cells
@@ -105,24 +96,24 @@ class NTM(BaseLayer):
         self.extended_output_size = output_size + mem_content_size + 2 * mem_key_size + 3
         self._read_result_shape = (batch_size, mem_content_size)
 
-        if init_weights:
-            self.tape = Tape(mem_key_size, mem_content_size, num_cells, batch_size, self.name + '_Tape')
-            with tf.variable_scope(self.name):
+        with tf.variable_scope(self.name):
+            if copy_from is None:
+                self.tape = Tape(mem_key_size, mem_content_size, num_cells, batch_size, self.name + '_Tape')
                 self.input_adapter = FeedForward(self.extended_input_size, controller.input_size, batch_size)
                 self.output_adapter = FeedForward(controller.output_size, self.extended_output_size, batch_size)
                 self.controller = controller
                 self.extended_controller = ConnectLayers([self.input_adapter, controller, self.output_adapter])
+            else:
+                self.tape = copy_from.tape.eval_model
+                self.extended_controller = copy_from.extended_controller.eval_model
+            self.layers = [self.tape, self.controller]
+            self.state_variables = {"read_result": tf.zeros(self._read_result_shape)}
+            BaseLayer.__init__(self, input_size, output_size, batch_size, self.name, copy_from)
 
-        with tf.variable_scope(self.name):
-            self.saved_read_result = tf.Variable(tf.zeros(self._read_result_shape))
-            self.read_result = self.saved_read_result
-
-        if batch_size > 1:
+        if copy_from is None:
             self.eval_model = NTM(input_size, output_size, 1,
                                   controller, mem_key_size, mem_content_size, num_cells,
-                                  activation_function, self.name + '_eval', init_weights=False)
-            self.eval_model.tape = self.tape.eval_model
-            self.eval_model.extended_controller = self.extended_controller.eval_model
+                                  self.name + '_eval', self, activation_function)
 
     def feed_input(self, i):
         extended_input = tf.concat(1, (i, self.read_result))
@@ -149,23 +140,3 @@ class NTM(BaseLayer):
         self.read_result = self.tape.read(read_key, read_key_str)
 
         return output
-
-    def save_state(self):
-        return tf.group(self.controller.save_state,
-                        self.tape.save_state(),
-                        self.saved_read_result.assign(self.read_result))
-
-    def reset_saved_state(self):
-        return tf.group(self.controller.reset_saved_state,
-                        self.tape.reset_saved_state(),
-                        self.saved_read_result.assign(tf.zeros(self._read_result_shape)))
-
-    def reset_current_state(self):
-        self.controller.reset_current_state()
-        self.tape.reset_current_state()
-        self.read_result = tf.zeros(self._read_result_shape)
-
-    def reset_current_state_if(self, cond):
-        self.controller.reset_current_state_if(cond)
-        self.tape.reset_current_state_if(cond)
-        self.read_result = conditional_reset(self.read_result, self._read_result_shape, cond)

@@ -137,7 +137,7 @@ def align_arrays(arrays, alignments, padding=0):
             row_padding = []
             for _ in range(global_spacing[i] - len(row)):
                 row_padding.append(np.zeros((1, padding), dtype=np.int32))
-            row = row_padding + row
+            row = row + row_padding
 
             for k in range(global_spacing[i]):
                 columns[k].append(row[k])
