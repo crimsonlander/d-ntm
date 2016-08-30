@@ -50,3 +50,7 @@ def class_with_name_scope(cls):
             setattr(cls, attr, function_with_name_scope(item))
             class_methods_with_scope.add(key)
     return cls
+
+
+def tensor2sequence(seq_tensor, seq_len):
+    return list(map(lambda w: tf.squeeze(w, [1]), tf.split(1, seq_len, seq_tensor)))

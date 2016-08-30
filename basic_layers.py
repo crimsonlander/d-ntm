@@ -1,19 +1,21 @@
 import tensorflow as tf
-
+import numpy as np
 from abc import ABCMeta, abstractmethod
-from helpers import conditional_reset, NameCreator, class_with_name_scope, function_with_name_scope, function_args
+from helpers import conditional_reset, NameCreator, class_with_name_scope, \
+    function_with_name_scope, function_args, tensor2sequence
 
 
 class BaseLayer(object):
     __metaclass__ = ABCMeta
 
-    def __init__(self, input_size, output_size, batch_size, name, copy_from, *args):
+    def __init__(self, input_size, output_size, batch_size, name, copy_from, trainable=True, *args):
         if type(self).__name__ == "BaseLayer":
             raise NotImplementedError("abstract class")
         self.name = NameCreator.name_it(self, name)
         self.input_size = input_size
         self.output_size = output_size
         self.batch_size = batch_size
+        self.trainable = trainable
 
         if not hasattr(self, "weight_variables"):
             self.weight_variables = dict()
@@ -26,11 +28,12 @@ class BaseLayer(object):
 
         if copy_from is None:
             for k, v in self.weight_variables.items():
-                setattr(self, k, tf.Variable(v, name=k))
+                setattr(self, k, tf.Variable(v, name=k, trainable=trainable))
         else:
-            self.weight_variables = copy_from.weight_variables
-            for k, v in self.weight_variables.items():
-                setattr(self, k, getattr(copy_from, k))
+            if hasattr(copy_from, "weight_variables"):
+                self.weight_variables = copy_from.weight_variables
+                for k, v in self.weight_variables.items():
+                    setattr(self, k, getattr(copy_from, k))
 
         self.current_state_variable_names = []
         self.saved_state_variables = []
@@ -42,6 +45,17 @@ class BaseLayer(object):
             self.current_state_variable_names.append(k)
             self.saved_state_variables.append(var)
             self.state_default_values.append(v)
+
+    def get_weights(self):
+        weight_values = dict()
+        for k, _ in self.weight_variables.items():
+            weight_values[k] = getattr(self, k).eval()
+
+        return weight_values
+
+    def set_weights(self, weight_values):
+        for k, v in weight_values.items():
+            getattr(self, k).assign(v).eval()
 
     def save_state(self):
         """
@@ -117,7 +131,7 @@ class BaseLayer(object):
         """
         Split seq_tensor along dimension 1 and feed resulting sequence. Dimension 1 will be squeezed.
         """
-        seq = map(lambda w: tf.squeeze(w, [1]), tf.split(1, seq_len, seq_tensor))
+        seq = tensor2sequence(seq_tensor, seq_len)
         return self.feed_sequence(seq)
 
     def feed_sequence_tensor_embeddings(self, seq_tensor, seq_len, embeddings):
@@ -180,18 +194,23 @@ class SparseLSTM(LSTM):
 
 @class_with_name_scope
 class GRU(BaseLayer):
-    def __init__(self, input_size, output_size, batch_size, name=None, copy_from=None):
+    def __init__(self, input_size, output_size, batch_size, name=None, copy_from=None, trainable=True):
         self._state_shape = [batch_size, output_size]
         self.name = NameCreator.name_it(self, name)
         with tf.variable_scope(self.name):
             self.state_variables = {"output": tf.zeros(self._state_shape, name="default_output")}
 
+            b_g = np.column_stack((np.zeros((1, output_size), dtype=np.float32),
+                                   4 * np.ones((1, output_size), dtype=np.float32)))
+            b_g = np.array(b_g, dtype=np.float32)
+
             self.weight_variables = {"iW_g": tf.truncated_normal([input_size, 2 * output_size], -0.1, 0.1),
                                      "oW_g": tf.truncated_normal([output_size, 2 * output_size], -0.1, 0.1),
-                                     "iW": tf.truncated_normal([input_size, output_size], -0.1, 0.1),
-                                     "oW": tf.truncated_normal([output_size, output_size], -0.1, 0.1),
+                                     "iW": tf.random_uniform([input_size, output_size],
+                                                            -1./input_size**0.5, 1./input_size**0.5),
+                                     "oW": np.eye(output_size, dtype=np.float32),
 
-                                     "b_g": tf.zeros([1, 2 * output_size]),
+                                     "b_g": b_g,
                                      "b": tf.zeros([1, output_size])}
             BaseLayer.__init__(*function_args())
             if copy_from is None:
@@ -207,7 +226,7 @@ class GRU(BaseLayer):
 
 
 class SparseGRU(GRU):
-    def __init__(self, num_classes, output_size, batch_size, name=None, copy_from=None):
+    def __init__(self, num_classes, output_size, batch_size, name=None, copy_from=None, trainable=True):
         GRU.__init__(*function_args())
         self.input_size = None
         self.num_classes = num_classes
@@ -254,7 +273,8 @@ class FeedForward(BaseLayer):
         self.name = NameCreator.name_it(self, name)
         self.activation_function = activation_function
         with tf.variable_scope(self.name):
-            self.weight_variables = {"W": tf.truncated_normal([input_size, output_size], -0.1, 0.1),
+            self.weight_variables = {"W": tf.random_uniform([input_size, output_size],
+                                                            -1./input_size**0.5, 1./input_size**0.5),
                                      "b": tf.zeros([1, output_size])}
             BaseLayer.__init__(*function_args())
             if copy_from is None:
@@ -339,3 +359,22 @@ class BatchNormalization(BaseLayer):
 
     def reset_current_state_if(self, cond):
         pass
+
+
+class Summary(BaseLayer):
+    def __init__(self, input_size, batch_size, name=None, copy_from=None):
+        self.name = NameCreator.name_it(self, name)
+        self.input_number = 0
+        self.eval = True
+        with tf.variable_scope(self.name):
+            BaseLayer.__init__(self, input_size, input_size, batch_size, self.name, copy_from)
+            if copy_from is None:
+                self.eval_model = type(self)(input_size, 1, self.name + '_eval', self)
+                self.eval = False
+
+    def feed_input(self, i):
+        if not self.eval:
+            tf.histogram_summary("%s %d" % (self.name, self.input_number), i)
+        self.input_number += 1
+
+        return i

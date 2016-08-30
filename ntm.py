@@ -5,7 +5,7 @@ from helpers import class_with_name_scope, conditional_reset, NameCreator
 
 @class_with_name_scope
 class Tape(BaseLayer):
-    def __init__(self, mem_key_size, mem_content_size, num_cells, batch_size, name=None, copy_from=True):
+    def __init__(self, mem_key_size, mem_content_size, num_cells, batch_size, name=None, copy_from=None):
         self.name = NameCreator.name_it(self, name)
         self.mem_key_size = mem_key_size
         self.mem_content_size = mem_content_size
@@ -106,7 +106,7 @@ class NTM(BaseLayer):
             else:
                 self.tape = copy_from.tape.eval_model
                 self.extended_controller = copy_from.extended_controller.eval_model
-            self.layers = [self.tape, self.controller]
+            self.layers = [self.tape, self.extended_controller]
             self.state_variables = {"read_result": tf.zeros(self._read_result_shape)}
             BaseLayer.__init__(self, input_size, output_size, batch_size, self.name, copy_from)
 

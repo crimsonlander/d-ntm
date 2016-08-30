@@ -43,7 +43,7 @@ def num2word(x):
     return _num2word[x]
 
 _word2num = dict(zip(_num2word.values(), _num2word.keys()))
-
+_num2word[0] = '_'
 
 def word2num(x):
     return _word2num[x]
@@ -137,7 +137,7 @@ def align_arrays(arrays, alignments, padding=0):
             row_padding = []
             for _ in range(global_spacing[i] - len(row)):
                 row_padding.append(np.zeros((1, padding), dtype=np.int32))
-            row = row + row_padding
+            row = row_padding + row
 
             for k in range(global_spacing[i]):
                 columns[k].append(row[k])

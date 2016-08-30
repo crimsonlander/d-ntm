@@ -4,7 +4,6 @@ import numpy as np
 from six.moves import cPickle as pickle
 from babi_batch_generator import bAbiBatchGenerator, num2word
 from basic_layers import LSTM, GRU, SparseGRU, FeedForward, ConnectLayers, BatchNormalization, Summary
-from ntm import NTM
 
 batch_size = 100
 
@@ -34,13 +33,11 @@ def conditional_sparse_softmax_ce_multiple_choice(logits, labels, n_labels, weig
 with graph.as_default():
     encoder = SparseGRU(vocabulary_size, sentence_encoding_size, batch_size, trainable=False)
 
-    controller_layer1 = GRU(sentence_encoding_size, 150, batch_size)
-    controller_layer2 = GRU(150, 150, batch_size)
+    model_layer1 = GRU(sentence_encoding_size, 200, batch_size)
+    model_layer2 = FeedForward(200, vocabulary_size, batch_size)
 
-    controller = ConnectLayers((controller_layer1,
-                           controller_layer2))
-
-    model = NTM(sentence_encoding_size, vocabulary_size, batch_size, controller, 50, 200, 10)
+    model = ConnectLayers((model_layer1,
+                           model_layer2))
 
     input_facts = []
     labels = []
